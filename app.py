@@ -16,7 +16,7 @@ ua = UserAgent()
 # --- Configuration ---
 DEFAULT_DELAY_MIN = 1
 DEFAULT_DELAY_MAX = 3
-DEFAULT_TIMEOUT = 25 # Increased timeout slightly
+DEFAULT_TIMEOUT = 25
 MAX_PAGES_DEFAULT = 5
 
 # Function to get a random header
@@ -28,7 +28,7 @@ def get_random_headers(referer=None):
         'Accept-Encoding': 'gzip, deflate',
         'Connection': 'keep-alive',
         'Upgrade-Insecure-Requests': '1',
-        # 'DNT': '1', # Do Not Track - might be suspicious sometimes
+        # 'DNT': '1', # Often set by browsers, but can sometimes flag bots
     }
     if referer:
         headers['Referer'] = referer
@@ -49,7 +49,7 @@ def scrape_groupda(category_value="3", country_value="", language_value="", max_
     
     try:
         st.write("Initializing Groupda.com session...")
-        # 1. Initial GET request to the find page to get session/cookies
+        # 1. Initial GET request to the find page
         init_headers = get_random_headers(referer="https://groupda.com/add/")
         init_response = session.get(find_url, headers=init_headers, timeout=DEFAULT_TIMEOUT)
         init_response.raise_for_status()
@@ -57,7 +57,7 @@ def scrape_groupda(category_value="3", country_value="", language_value="", max_
         
         # --- Crucial: Get Country Code/Name from the external API ---
         geo_api_url = "https://geolocation-db.com/json/geoip.php?jsonp=callback"
-        geo_headers = get_random_headers(referer=find_url)
+        geo_headers = get_random_headers(referer=find_url) # Referer is the find page
         geo_response = session.get(geo_api_url, headers=geo_headers, timeout=DEFAULT_TIMEOUT)
         
         country_code = ""
@@ -78,31 +78,41 @@ def scrape_groupda(category_value="3", country_value="", language_value="", max_
             else:
                 st.warning("Could not parse geolocation data format. Using empty strings.")
         else:
-             st.warning(f"Geolocation request failed (Status {geo_response.status_code}). Proceeding without it.")
+             st.warning(f"Geolocation request failed (Status {geo_response.status_code}). Proceeding without precise geolocation data.")
         # --- End Geolocation ---
 
-        # 2. --- Load initial results (group_no=0) explicitly ---
-        # Mimic the JS callback logic precisely
-        # Default gcid from JS is '3'. If user selects "Any Category" (""), it should probably be sent as "".
-        # Let's ensure we use the passed category_value correctly.
+        # --- Mimic JS defaults exactly ---
+        # From JS: var gcid = '3'; var cid = ''; var lid = '';
+        js_default_gcid = '3'
+        js_default_cid = ''
+        js_default_lid = ''
+        
+        # Use JS defaults if UI values are empty/None
+        effective_gcid = category_value if category_value is not None and category_value != "" else js_default_gcid
+        effective_cid = country_value if country_value is not None else js_default_cid
+        effective_lid = language_value if language_value is not None else js_default_lid
+        # --- End JS defaults ---
+
+        # 2. --- Load initial results (group_no=0) explicitly, mimicking JS callback precisely ---
         st.write("Loading initial results (page 1)...")
+        # This is the exact data structure from the JS callback function
         initial_post_data = {
             'group_no': '0',
-            'gcid': category_value, # Use the value passed from UI, default is "3"
-            'cid': country_value,   # Can be ""
-            'lid': language_value,  # Can be ""
-            'findPage': 'true',     # Always true for /find
-            'countryCode': country_code,  # From geolocation
-            'countryName': country_name   # From geolocation
+            'gcid': effective_gcid,      # Use effective value
+            'cid': effective_cid,        # Use effective value
+            'lid': effective_lid,        # Use effective value
+            'findPage': 'true',          # Always true for /find
+            'countryCode': country_code, # From geolocation
+            'countryName': country_name  # From geolocation
         }
         # Crucial headers for AJAX POST to loadresult
-        initial_load_headers = get_random_headers(referer=find_url)
+        initial_load_headers = get_random_headers(referer=find_url) # Referer is the find page
         initial_load_headers.update({
             'X-Requested-With': 'XMLHttpRequest',
             'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8',
             'Origin': 'https://groupda.com',
         })
-        # Debug: Print data being sent
+        # Debug: Print data being sent (can be enabled for troubleshooting)
         # st.write(f"DEBUG: Sending initial POST data: {initial_post_data}")
         
         initial_res = session.post(load_url, data=initial_post_data, headers=initial_load_headers, timeout=DEFAULT_TIMEOUT)
@@ -114,9 +124,8 @@ def scrape_groupda(category_value="3", country_value="", language_value="", max_
                 results.extend(initial_groups)
                 st.write(f"Found {len(initial_groups)} groups on initial load.")
             else:
-                st.info("Initial AJAX call returned empty content for Groupda.com. This might mean no groups match the filters or geolocation.")
-                # Log the data sent for debugging
-                # st.write(f"Data sent: {initial_post_data}")
+                st.info("Initial AJAX call returned empty content for Groupda.com. Check filters/geolocation.")
+                st.write(f"Data sent: gcid='{effective_gcid}', cid='{effective_cid}', lid='{effective_lid}', CC='{country_code}', CN='{country_name}'")
         else:
             st.error(f"Initial AJAX call failed for Groupda.com (Status {initial_res.status_code}): {initial_res.reason}")
 
@@ -129,11 +138,12 @@ def scrape_groupda(category_value="3", country_value="", language_value="", max_
 
             st.write(f"Scraping Groupda.com page {page_counter + 1} (AJAX)...")
             
+            # Use the same effective parameters for subsequent pages
             post_data = {
                 'group_no': str(page_counter),
-                'gcid': category_value,
-                'cid': country_value,
-                'lid': language_value,
+                'gcid': effective_gcid,
+                'cid': effective_cid,
+                'lid': effective_lid,
                 'findPage': 'true',
                 'countryCode': country_code,
                 'countryName': country_name
@@ -164,9 +174,9 @@ def scrape_groupda(category_value="3", country_value="", language_value="", max_
                 break
             
             for group in page_groups:
-                group['Category_ID'] = category_value
-                group['Country_ID'] = country_value
-                group['Language_ID'] = language_value
+                group['Category_ID'] = effective_gcid
+                group['Country_ID'] = effective_cid
+                group['Language_ID'] = effective_lid
                 results.append(group)
             
             page_counter += 1
@@ -190,6 +200,7 @@ def scrape_groupda(category_value="3", country_value="", language_value="", max_
 def parse_groupda_containers(soup):
     """Parses group containers from Groupda.com's AJAX response."""
     groups = []
+    # Based on HTML structure analysis
     group_items = soup.find_all('div', class_='view-tenth')
     
     for item in group_items:
@@ -220,8 +231,8 @@ def scrape_groupsor(category_value="", country_value="", language_value="", max_
     """
     Scrapes Groupsor.link/find by replicating its AJAX loading mechanism.
     """
-    # Important: Use the correct URL for the find page
-    find_url = "https://groupsor.link/group/find" # This is the page with filters
+    # Correct URL for the find page based on analysis and form action
+    find_url = "https://groupsor.link/group/find"
     load_url = "https://groupsor.link/group/indexmore"
     join_base_url = "https://chat.whatsapp.com/invite/"
     results = []
@@ -230,42 +241,49 @@ def scrape_groupsor(category_value="", country_value="", language_value="", max_
     
     try:
         st.write("Initializing Groupsor.link session...")
-        # 1. Initial GET request to the find page to get session/cookies
-        # Use headers that look very standard for a browser navigating to a page
+        # 1. Initial GET request to the find page
+        # Use very standard browser-like headers to avoid immediate suspicion
         init_headers = get_random_headers(referer="https://groupsor.link/")
-        # Avoid overly specific headers that might flag the request
-        # init_headers.update({ # Removing these for now
+        # Avoid adding headers that might be less common or flag bot behavior unless absolutely necessary
+        # init_headers.update({
         #     'Sec-Fetch-Dest': 'document',
         #     'Sec-Fetch-Mode': 'navigate',
         #     'Sec-Fetch-Site': 'same-origin',
         #     'Cache-Control': 'max-age=0'
         # })
+        
         init_response = session.get(find_url, headers=init_headers, timeout=DEFAULT_TIMEOUT)
-        # Check status but don't raise, handle gracefully
+        # DO NOT raise for status immediately, handle 403 specifically
+        # init_response.raise_for_status() 
+        
         if init_response.status_code == 200:
              st.write("Initial find page fetched.")
+        elif init_response.status_code == 403:
+             st.error(f"403 Forbidden when accessing Groupsor.link find page. This site likely has strong anti-bot measures (e.g., Cloudflare) that prevent simple scraping with 'requests'. Response snippet: {init_response.text[:200]}")
+             return pd.DataFrame() # Stop scraping Groupsor
         else:
-             st.error(f"Failed to fetch Groupsor.link find page (Status {init_response.status_code}). Cannot proceed.")
-             return pd.DataFrame() # Stop if initial page fails
+             st.error(f"Failed to fetch Groupsor.link find page (Status {init_response.status_code}: {init_response.reason}). Cannot proceed.")
+             return pd.DataFrame() # Stop scraping Groupsor
 
         # 2. --- Load initial results (group_no=0) ---
         st.write("Loading initial results (page 1)...")
-        # Send filter parameters like the site likely expects for filtered results
+        # Prepare POST data for initial load, including filter parameters if provided
         initial_post_data = {
             'group_no': '0'
         }
-        # Only add filter params if they are not empty
+        # Conditionally add filter parameters (mimicking how a form submit might work)
+        # Only add if the value is not an empty string
         if category_value: initial_post_data['gcid'] = category_value
         if country_value: initial_post_data['cid'] = country_value
         if language_value: initial_post_data['lid'] = language_value
 
         # Crucial headers for AJAX POST to indexmore
-        initial_load_headers = get_random_headers(referer=find_url) # Referer is the find page
+        initial_load_headers = get_random_headers(referer=find_url) # Referer is the find page itself
         initial_load_headers.update({
             'X-Requested-With': 'XMLHttpRequest',
             'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8',
-            'Origin': 'https://groupsor.link', # Crucial
-            # Removing Sec-Fetch headers for simplicity
+            'Origin': 'https://groupsor.link', # Origin is crucial for CORS
+            # Removing potentially suspicious Sec-Fetch headers for now
             # 'Sec-Fetch-Dest': 'empty',
             # 'Sec-Fetch-Mode': 'cors',
             # 'Sec-Fetch-Site': 'same-origin',
@@ -284,7 +302,7 @@ def scrape_groupsor(category_value="", country_value="", language_value="", max_
             else:
                st.info("Initial AJAX call returned empty content for Groupsor.link.")
         else:
-            st.error(f"Initial AJAX call failed for Groupsor.link (Status {initial_res.status_code}): {initial_res.reason}. Response snippet: {initial_res.text[:200]}")
+            st.error(f"Initial AJAX call failed for Groupsor.link (Status {initial_res.status_code}: {initial_res.reason}). Response snippet: {initial_res.text[:200]}")
 
         # 3. Loop through subsequent pages using AJAX POST
         page_counter = 1
@@ -295,10 +313,11 @@ def scrape_groupsor(category_value="", country_value="", language_value="", max_
 
             st.write(f"Scraping Groupsor.link page {page_counter + 1}...")
             
+            # Prepare POST data for subsequent loads
             post_data = {
                 'group_no': str(page_counter)
             }
-            # Add filter params for subsequent pages too
+            # Include filter parameters for subsequent pages as well
             if category_value: post_data['gcid'] = category_value
             if country_value: post_data['cid'] = country_value
             if language_value: post_data['lid'] = language_value
@@ -357,32 +376,39 @@ def scrape_groupsor(category_value="", country_value="", language_value="", max_
 def parse_groupsor_containers(soup, join_base_url):
     """Parses group containers from Groupsor.link's AJAX response and transforms links."""
     groups = []
+    # Based on HTML structure analysis
     group_items = soup.find_all('div', class_='view-tenth')
     
     for item in group_items:
         actual_whatsapp_link = ""
+        # 1. Prioritize the Groupsor join link (/group/join/ID) and transform it
         join_link_tag = item.find('a', href=lambda href: href and '/group/join/' in href)
         if join_link_tag:
             join_href = join_link_tag.get('href', '').strip()
             if join_href:
+                # Transform: /group/join/ID -> https://chat.whatsapp.com/invite/ID
                 path = urlparse(join_href).path
                 if path.startswith("/group/join/"):
                     group_id = path.split("/group/join/")[-1]
                     actual_whatsapp_link = urljoin(join_base_url, group_id)
                 else:
-                    actual_whatsapp_link = join_href
+                    actual_whatsapp_link = join_href # Fallback if path is unexpected
 
+        # 2. Fallback to a direct WhatsApp link if no join link found
         if not actual_whatsapp_link:
             direct_link_tag = item.find('a', href=lambda href: href and 'chat.whatsapp.com' in href)
             if direct_link_tag:
                 actual_whatsapp_link = direct_link_tag.get('href', '').strip()
 
+        # If still no valid link, skip this container
         if not actual_whatsapp_link:
             continue
             
+        # Extract title
         title_tag = item.find('h3') or item.find('p') or (join_link_tag if join_link_tag else (direct_link_tag if direct_link_tag else None))
         title = title_tag.get_text(strip=True) if title_tag else "No Title"
         
+        # Extract image URL
         img_tag = item.find('img')
         img_src = img_tag.get('src', '') if img_tag else ''
         
@@ -459,11 +485,11 @@ category_options_groupsor = {
     "Thoughts/Quotes/Jokes": "31",
     "Travel/Local/Place": "32",
 }
-# Note: Country/Language IDs for Groupsor might differ from Groupda
+# Note: Country/Language IDs for Groupsor might be different
 country_options_simple_gs = {"Any Country": "", "India": "29", "USA": "87", "UK": "86", "Canada": "12", "Australia": "3"}
 language_options_simple_gs = {"Any Language": "", "English": "11", "Hindi": "69", "Spanish": "12", "French": "29", "German": "9"}
 
-# Initialize variables
+# Initialize variables with defaults
 selected_category_value_gd = "3" # Default to JS default 18+
 selected_country_value_gd = ""
 selected_language_value_gd = ""
