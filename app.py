@@ -136,7 +136,6 @@ def scrape_groupda(category_value="3", country_value="", language_value="", max_
     return df
 
 def parse_groupda_containers(soup):
-    # This function is confirmed to be correct
     groups = []
     for item in soup.find_all('div', class_='view-tenth'):
         link_tag = item.find('a', href=lambda href: href and 'chat.whatsapp.com' in href)
@@ -232,7 +231,6 @@ def scrape_groupsor(category_value="", country_value="", language_value="", max_
     return df
 
 def parse_groupsor_containers(soup, join_base_url):
-    # This function is confirmed to be correct
     groups = []
     for item in soup.find_all('div', class_='view-tenth'):
         actual_whatsapp_link = ""
@@ -251,12 +249,10 @@ def parse_groupsor_containers(soup, join_base_url):
     return groups
 
 
-# --- Streamlit App (No changes needed, the UI part of your code is perfect) ---
+# --- Streamlit App ---
 st.title("Dynamic Group Link Scraper")
 st.sidebar.header("Scraper Settings")
 
-# ... [The rest of your Streamlit UI code remains here, unchanged] ...
-# (I'm omitting it for brevity as it was correct)
 site_choice = st.sidebar.selectbox(
     "Select Website to Scrape:",
     ("Groupda.com", "Groupsor.link", "Both")
@@ -328,7 +324,8 @@ if st.sidebar.button("Start Scraping"):
 
     if site_choice in ["Groupsor.link", "Both"]:
         df_groupsor = scrape_groupsor(
-            category_value=.selected_category_value_gs,
+            # THIS IS THE LINE THAT WAS FIXED
+            category_value=selected_category_value_gs,
             country_value=selected_country_value_gs,
             language_value=selected_language_value_gs,
             max_pages=max_pages
