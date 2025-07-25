@@ -6,3 +6,6 @@ pandas
 fake-useragent
 cloudscraper
 urllib3
+selenium
+webdriver-manager
+html5lib
