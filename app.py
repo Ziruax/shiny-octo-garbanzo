@@ -7,6 +7,7 @@ import random
 from fake_useragent import UserAgent
 import pandas as pd
 from urllib.parse import urljoin, urlparse
+import json
 
 # Initialize a global UserAgent object
 ua = UserAgent()
@@ -62,7 +63,6 @@ def scrape_groupda(category_value="", country_value="", language_value="", max_p
         # Extract JSON part
         geo_text = geo_response.text
         if geo_text.startswith("callback(") and geo_text.endswith(");"):
-            import json
             json_str = geo_text[9:-2] # Remove 'callback(' and ');'
             geo_data = json.loads(json_str)
             country_code = geo_data.get('country_code', '')
@@ -158,10 +158,13 @@ def scrape_groupda(category_value="", country_value="", language_value="", max_p
             
     except requests.exceptions.Timeout:
         st.error("Timeout occurred while scraping Groupda.com.")
+        return pd.DataFrame() # Return empty DataFrame on error
     except requests.exceptions.RequestException as e:
         st.error(f"An HTTP error occurred while scraping Groupda.com: {e}")
+        return pd.DataFrame() # Return empty DataFrame on error
     except Exception as e:
         st.error(f"An unexpected error occurred while scraping Groupda.com: {e}")
+        return pd.DataFrame() # Return empty DataFrame on error
     
     st.success(f"Finished scraping Groupda.com. Total pages scraped: {page_counter}, Links found: {len(results)}")
     return pd.DataFrame(results)
@@ -297,10 +300,13 @@ def scrape_groupsor(category_value="", country_value="", language_value="", max_
             
     except requests.exceptions.Timeout:
         st.error("Timeout occurred while scraping Groupsor.link.")
+        return pd.DataFrame() # Return empty DataFrame on error
     except requests.exceptions.RequestException as e:
         st.error(f"An HTTP error occurred while scraping Groupsor.link: {e}")
+        return pd.DataFrame() # Return empty DataFrame on error
     except Exception as e:
         st.error(f"An unexpected error occurred while scraping Groupsor.link: {e}")
+        return pd.DataFrame() # Return empty DataFrame on error
         
     st.success(f"Finished scraping Groupsor.link. Total pages scraped: {page_counter}, Links found: {len(results)}")
     return pd.DataFrame(results)
@@ -437,7 +443,8 @@ if st.sidebar.button("Start Scraping"):
             if not df_groupsor.empty:
                 all_data.append(df_groupsor)
 
-    if all_
+    # Corrected line: Added the missing colon ':'
+    if all_data:
         final_df = pd.concat(all_data, ignore_index=True)
         st.subheader("Scraped Results")
         st.dataframe(final_df)
