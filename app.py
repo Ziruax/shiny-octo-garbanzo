@@ -1,3 +1,4 @@
+# app.py
 import streamlit as st
 import requests
 from bs4 import BeautifulSoup
@@ -23,7 +24,6 @@ def get_random_headers():
         'Accept-Language': 'en-US,en;q=0.5',
         'Accept-Encoding': 'gzip, deflate',
         'Connection': 'keep-alive',
-        'Referer': 'https://groupda.com/add/group/find', # Important for POST requests
         'Upgrade-Insecure-Requests': '1',
     }
 
@@ -41,103 +41,81 @@ def scrape_groupda(category_value="", country_value="", language_value="", max_p
     results = []
     
     session = requests.Session()
-    # session.headers.update(get_random_headers()) # Set initial headers
     
     try:
         st.write("Initializing Groupda.com session...")
-        # 1. Initial GET request to the find page to get cookies/session
+        # 1. Initial GET request to the find page to get cookies/session and initial content
         init_headers = get_random_headers()
         init_headers['Referer'] = 'https://groupda.com/add/'
         response = session.get(base_url, headers=init_headers, timeout=DEFAULT_TIMEOUT)
         response.raise_for_status()
         st.write("Initial page loaded.")
         
-        # 2. Try to parse initial page content if needed (e.g., hidden tokens)
-        # soup = BeautifulSoup(response.text, 'html.parser')
-        
-        # 3. Loop through pages
-        page_counter = 0
+        # Parse initial page to get the initial set of groups (group_no=0)
+        initial_soup = BeautifulSoup(response.text, 'html.parser')
+        initial_results_div = initial_soup.find('div', id='results')
+        if initial_results_div:
+            initial_groups = parse_group_containers(initial_results_div, "Groupda.com")
+            results.extend(initial_groups)
+            st.write(f"Found {len(initial_groups)} groups on initial load.")
+        else:
+            st.warning("Could not find initial results div on Groupda.com")
+
+        # 2. Loop through subsequent pages using AJAX POST
+        page_counter = 1 # Start from 1 as 0 is already loaded
         while True: # Infinite loop, break on no results or max_pages
             if max_pages is not None and page_counter >= max_pages:
                 st.info(f"Reached maximum pages limit ({max_pages}) for Groupda.com.")
                 break
 
-            st.write(f"Scraping Groupda.com page {page_counter + 1}...")
+            st.write(f"Scraping Groupda.com page {page_counter + 1} (AJAX)...")
             
             # POST data for loading results
+            # Based on the JS, we should include countryCode and countryName if possible,
+            # but since we can't easily get them, we'll omit them and see if it works.
             post_data = {
                 'group_no': str(page_counter),
                 'gcid': category_value,
                 'cid': country_value,
                 'lid': language_value,
                 'findPage': 'true'
-                # Note: countryCode and countryName are fetched via JS from an external API.
-                # Omitting them might work, or might not return results.
-                # If issues arise, we might need to simulate that API call or use a proxy.
+                # countryCode and countryName omitted
             }
             
             # Make POST request to load results
             load_headers = get_random_headers()
             load_headers['Referer'] = base_url
-            load_headers['X-Requested-With'] = 'XMLHttpRequest' # Often used for AJAX
-            load_headers['Content-Type'] = 'application/x-www-form-urlencoded; charset=UTF-8' # Common for forms
+            load_headers['X-Requested-With'] = 'XMLHttpRequest'
+            load_headers['Content-Type'] = 'application/x-www-form-urlencoded; charset=UTF-8'
             
             res = session.post(load_url, data=post_data, headers=load_headers, timeout=DEFAULT_TIMEOUT)
             
             # Check for specific error responses or empty content
             if res.status_code != 200:
-                 st.warning(f"Groupda.com page {page_counter + 1}: Received status code {res.status_code}. Stopping.")
-                 break
+                st.warning(f"Groupda.com page {page_counter + 1}: Received status code {res.status_code}. Stopping.")
+                break
             
             # Check if response content indicates no more results
-            # (This is heuristic, might need adjustment)
             if not res.text.strip() or "<!-- No results -->" in res.text or res.text.strip() == "":
-                 st.info(f"No more results found on Groupda.com after page {page_counter}.")
-                 break # Likely no more results
+                st.info(f"No more results found on Groupda.com after page {page_counter + 1}.")
+                break # Likely no more results
             
             # Parse the returned HTML snippet
             result_soup = BeautifulSoup(res.text, 'html.parser')
             
-            # --- Find group links and titles ---
-            # Based on the HTML structure, links are <a> tags with href containing 'chat.whatsapp.com'
-            # Titles seem to be within <h3 class="group-title"> or similar, or just the text inside the <a> tag.
-            # Let's look for <div class="view-group"> or similar container first.
+            # Extract groups
+            page_groups = parse_group_containers(result_soup, "Groupda.com")
             
-            group_containers = result_soup.find_all('div', class_='view-group') # More robust if class exists
-            if not group_containers:
-                 # Fallback: look for <a> tags directly
-                 group_links = result_soup.find_all('a', href=lambda href: href and 'chat.whatsapp.com' in href)
-                 group_data_list = [{'link_tag': link} for link in group_links]
-            else:
-                 # Extract links and titles from containers
-                 group_data_list = []
-                 for container in group_containers:
-                     link_tag = container.find('a', href=lambda href: href and 'chat.whatsapp.com' in href)
-                     if link_tag:
-                         title_tag = container.find('h3') or container.find('h4') or container.find('p') # Try common title tags
-                         title = title_tag.get_text(strip=True) if title_tag else link_tag.get_text(strip=True)
-                         group_data_list.append({'link_tag': link_tag, 'title': title})
-
-            if not group_data_list:
-                st.warning(f"No group links found on Groupda.com page {page_counter + 1}.")
+            if not page_groups:
+                st.warning(f"No group links found in parsed content of Groupda.com page {page_counter + 1}.")
                 # Decide whether to break or continue. Let's break as it likely means no more results.
                 break 
             
-            for item in group_data_list:
-                link_tag = item['link_tag']
-                href = link_tag.get('href', '')
-                # Prefer extracted title, fallback to link text, then "No Title"
-                title = item.get('title', '') or link_tag.get_text(strip=True) or "No Title Found"
-                
-                if href: # Only append if href exists
-                    results.append({
-                        'Source': 'Groupda.com',
-                        'Title': title,
-                        'Link': href,
-                        'Category': category_value,
-                        'Country': country_value,
-                        'Language': language_value
-                    })
+            for group in page_groups:
+                group['Category'] = category_value
+                group['Country'] = country_value
+                group['Language'] = language_value
+                results.append(group)
             
             page_counter += 1
             # Add a delay to be respectful
@@ -156,7 +134,11 @@ def scrape_groupda(category_value="", country_value="", language_value="", max_p
         return pd.DataFrame()
     
     st.success(f"Finished scraping Groupda.com. Total pages scraped: {page_counter}, Links found: {len(results)}")
-    return pd.DataFrame(results)
+    df = pd.DataFrame(results)
+    # Reorder columns if needed
+    if not df.empty:
+        df = df[['Source', 'Title', 'Link', 'Category', 'Country', 'Language']]
+    return df
 
 # Function to scrape Groupsor.link
 def scrape_groupsor(category_value="", country_value="", language_value="", max_pages=None):
@@ -168,25 +150,40 @@ def scrape_groupsor(category_value="", country_value="", language_value="", max_
     results = []
     
     session = requests.Session()
-    # session.headers.update(get_random_headers())
     
     try:
         st.write("Initializing Groupsor.link session...")
-        # 1. Initial GET request
+        # 1. Initial GET request to load the first set of results (group_no=0)
         init_headers = get_random_headers()
         init_headers['Referer'] = 'https://groupsor.link/'
-        response = session.get(base_url, headers=init_headers, timeout=DEFAULT_TIMEOUT)
-        response.raise_for_status()
+        # The initial load happens via JS: $('#results').load("...", {'group_no': 0})
+        # We need to replicate this initial AJAX call.
+        initial_post_data = {'group_no': '0'}
+        initial_headers_ajax = get_random_headers()
+        initial_headers_ajax['Referer'] = base_url
+        initial_headers_ajax['X-Requested-With'] = 'XMLHttpRequest'
+        initial_headers_ajax['Content-Type'] = 'application/x-www-form-urlencoded; charset=UTF-8'
+        
+        initial_res = session.post(load_url, data=initial_post_data, headers=initial_headers_ajax, timeout=DEFAULT_TIMEOUT)
+        initial_res.raise_for_status()
+        
+        if initial_res.text.strip():
+            initial_soup = BeautifulSoup(initial_res.text, 'html.parser')
+            initial_groups = parse_group_containers(initial_soup, "Groupsor.link")
+            results.extend(initial_groups)
+            st.write(f"Found {len(initial_groups)} groups on initial load.")
+        else:
+            st.warning("Initial AJAX call for Groupsor.link returned empty content.")
         st.write("Initial page loaded.")
         
-        # 2. Loop through pages
-        page_counter = 0
+        # 2. Loop through subsequent pages
+        page_counter = 1 # Start from 1
         while True: # Infinite loop, break on no results or max_pages
-             if max_pages is not None and page_counter >= max_pages:
+            if max_pages is not None and page_counter >= max_pages:
                 st.info(f"Reached maximum pages limit ({max_pages}) for Groupsor.link.")
                 break
 
-             st.write(f"Scraping Groupsor.link page {page_counter + 1}...")
+            st.write(f"Scraping Groupsor.link page {page_counter + 1}...")
             
             # POST data for loading more results
             post_data = {
@@ -194,7 +191,6 @@ def scrape_groupsor(category_value="", country_value="", language_value="", max_
                 'gcid': category_value,
                 'cid': country_value,
                 'lid': language_value
-                # Note: No 'findPage' flag seems needed for Groupsor based on JS
             }
             
             load_headers = get_random_headers()
@@ -204,51 +200,30 @@ def scrape_groupsor(category_value="", country_value="", language_value="", max_
             
             res = session.post(load_url, data=post_data, headers=load_headers, timeout=DEFAULT_TIMEOUT)
             
-             # Check for specific error responses or empty content
+            # Check for specific error responses or empty content
             if res.status_code != 200:
-                 st.warning(f"Groupsor.link page {page_counter + 1}: Received status code {res.status_code}. Stopping.")
-                 break
+                st.warning(f"Groupsor.link page {page_counter + 1}: Received status code {res.status_code}. Stopping.")
+                break
             
             # Check if response content indicates no more results
             if not res.text.strip() or "<!-- No results -->" in res.text or res.text.strip() == "":
-                 st.info(f"No more results found on Groupsor.link after page {page_counter}.")
-                 break # Likely no more results
+                st.info(f"No more results found on Groupsor.link after page {page_counter + 1}.")
+                break # Likely no more results
             
             result_soup = BeautifulSoup(res.text, 'html.parser')
             
-            # --- Find group links and titles ---
-            # Similar logic as Groupda
-            group_containers = result_soup.find_all('div', class_='view-group')
-            if not group_containers:
-                 group_links = result_soup.find_all('a', href=lambda href: href and 'chat.whatsapp.com' in href)
-                 group_data_list = [{'link_tag': link} for link in group_links]
-            else:
-                 group_data_list = []
-                 for container in group_containers:
-                     link_tag = container.find('a', href=lambda href: href and 'chat.whatsapp.com' in href)
-                     if link_tag:
-                         title_tag = container.find('h3') or container.find('h4') or container.find('p')
-                         title = title_tag.get_text(strip=True) if title_tag else link_tag.get_text(strip=True)
-                         group_data_list.append({'link_tag': link_tag, 'title': title})
-
-            if not group_data_list:
-                st.warning(f"No group links found on Groupsor.link page {page_counter + 1}.")
+            # Extract groups
+            page_groups = parse_group_containers(result_soup, "Groupsor.link")
+            
+            if not page_groups:
+                st.warning(f"No group links found in parsed content of Groupsor.link page {page_counter + 1}.")
                 break # Likely no more results
             
-            for item in group_data_list:
-                link_tag = item['link_tag']
-                href = link_tag.get('href', '')
-                title = item.get('title', '') or link_tag.get_text(strip=True) or "No Title Found"
-                
-                if href:
-                    results.append({
-                        'Source': 'Groupsor.link',
-                        'Title': title,
-                        'Link': href,
-                        'Category': category_value,
-                        'Country': country_value,
-                        'Language': language_value
-                    })
+            for group in page_groups:
+                group['Category'] = category_value
+                group['Country'] = country_value
+                group['Language'] = language_value
+                results.append(group)
                 
             page_counter += 1
             delay = random.uniform(DEFAULT_DELAY_MIN, DEFAULT_DELAY_MAX)
@@ -266,7 +241,57 @@ def scrape_groupsor(category_value="", country_value="", language_value="", max_
         return pd.DataFrame()
         
     st.success(f"Finished scraping Groupsor.link. Total pages scraped: {page_counter}, Links found: {len(results)}")
-    return pd.DataFrame(results)
+    df = pd.DataFrame(results)
+    # Reorder columns if needed
+    if not df.empty:
+        df = df[['Source', 'Title', 'Link', 'Category', 'Country', 'Language']]
+    return df
+
+def parse_group_containers(soup, source_name):
+    """Helper function to parse group containers from a BeautifulSoup object."""
+    groups = []
+    # Based on the HTML structure, look for containers. The class might vary or be absent.
+    # Let's try a common pattern or just look for <a> tags directly.
+    
+    # Attempt 1: Look for common container classes (this might need adjustment based on actual rendered HTML)
+    # group_containers = soup.find_all('div', class_='view-group') 
+    
+    # Attempt 2: Look for <a> tags directly containing the WhatsApp links
+    group_links = soup.find_all('a', href=lambda href: href and 'chat.whatsapp.com' in href)
+    
+    if not group_links:
+        # If no links found directly, return empty list
+        return groups
+
+    for link_tag in group_links:
+        href = link_tag.get('href', '').strip()
+        if not href:
+            continue
+            
+        # Try to get a title
+        # Option 1: Text inside the <a> tag
+        title_from_link = link_tag.get_text(strip=True)
+        
+        # Option 2: Look for a nearby title element (this is heuristic and might need refinement)
+        title = "No Title Found"
+        parent = link_tag.parent
+        if parent:
+            # Look for a heading tag sibling or parent
+            title_tag = parent.find_previous_sibling(['h3', 'h4', 'h5', 'h6', 'p', 'div'])
+            if title_tag and title_tag.get_text(strip=True):
+                title = title_tag.get_text(strip=True)
+            elif title_from_link:
+                title = title_from_link
+            # Add more heuristics if needed
+            
+        groups.append({
+            'Source': source_name,
+            'Title': title,
+            'Link': href,
+            # Category, Country, Language will be added by the caller
+        })
+        
+    return groups
 
 
 # --- Streamlit App ---
@@ -344,27 +369,31 @@ category_options_groupsor = {
     "Travel/Local/Place": "32",
 }
 
-# Country and Language options are large. For simplicity, we'll just allow text input or a small subset.
+# Country and Language options are large. For simplicity, we'll define a small subset.
 # You can expand this or use a library like `pycountry` if needed.
-country_options_simple = {"Any Country": "", "India": "99", "USA": "223", "UK": "222"}
-language_options_simple = {"Any Language": "", "English": "17", "Hindi": "26", "Spanish": "51"}
+country_options_simple = {"Any Country": "", "India": "99", "USA": "223", "UK": "222", "Canada": "38", "Australia": "13"}
+language_options_simple = {"Any Language": "", "English": "17", "Hindi": "26", "Spanish": "51", "French": "20", "German": "23"}
 
-selected_category_name = ""
-selected_category_value = ""
-selected_country_value = ""
-selected_language_value = ""
+selected_category_name_gd = ""
+selected_category_value_gd = ""
+selected_country_value_gd = ""
+selected_language_value_gd = ""
+
+selected_category_name_gs = ""
+selected_category_value_gs = ""
+selected_country_value_gs = ""
+selected_language_value_gs = ""
 
 if site_choice in ["Groupda.com", "Both"]:
-    selected_category_name_gd = st.sidebar.selectbox("Category (Groupda.com):", list(category_options_groupda.keys()))
+    selected_category_name_gd = st.sidebar.selectbox("Category (Groupda.com):", list(category_options_groupda.keys()), key="gd_cat")
     selected_category_value_gd = category_options_groupda[selected_category_name_gd]
-    # Simple inputs for Country/Language for now
     selected_country_name_gd = st.sidebar.selectbox("Country (Groupda.com):", list(country_options_simple.keys()), key="gd_country")
     selected_country_value_gd = country_options_simple[selected_country_name_gd]
     selected_language_name_gd = st.sidebar.selectbox("Language (Groupda.com):", list(language_options_simple.keys()), key="gd_lang")
     selected_language_value_gd = language_options_simple[selected_language_name_gd]
 
 if site_choice in ["Groupsor.link", "Both"]:
-    selected_category_name_gs = st.sidebar.selectbox("Category (Groupsor.link):", list(category_options_groupsor.keys()))
+    selected_category_name_gs = st.sidebar.selectbox("Category (Groupsor.link):", list(category_options_groupsor.keys()), key="gs_cat")
     selected_category_value_gs = category_options_groupsor[selected_category_name_gs]
     selected_country_name_gs = st.sidebar.selectbox("Country (Groupsor.link):", list(country_options_simple.keys()), key="gs_country")
     selected_country_value_gs = country_options_simple[selected_country_name_gs]
@@ -380,26 +409,26 @@ if st.sidebar.button("Start Scraping"):
     all_data = []
     
     if site_choice in ["Groupda.com", "Both"]:
-        # Use the values selected for Groupda
-        sel_cat_val = selected_category_value_gd if site_choice == "Groupda.com" else selected_category_value_gd # Always use GD's for 'Both' when scraping GD
-        sel_cou_val = selected_country_value_gd
-        sel_lan_val = selected_language_value_gd
         with st.spinner(f"Scraping data from Groupda.com (Category: {selected_category_name_gd})..."):
-            df_groupda = scrape_groupda(category_value=sel_cat_val, country_value=sel_cou_val, language_value=sel_lan_val, max_pages=max_pages)
+            df_groupda = scrape_groupda(
+                category_value=selected_category_value_gd, 
+                country_value=selected_country_value_gd, 
+                language_value=selected_language_value_gd, 
+                max_pages=max_pages
+            )
             if not df_groupda.empty:
                 all_data.append(df_groupda)
-            # st.success("Finished scraping Groupda.com!")
 
     if site_choice in ["Groupsor.link", "Both"]:
-        # Use the values selected for Groupsor
-        sel_cat_val = selected_category_value_gs if site_choice == "Groupsor.link" else selected_category_value_gs # Always use GS's for 'Both' when scraping GS
-        sel_cou_val = selected_country_value_gs
-        sel_lan_val = selected_language_value_gs
         with st.spinner(f"Scraping data from Groupsor.link (Category: {selected_category_name_gs})..."):
-            df_groupsor = scrape_groupsor(category_value=sel_cat_val, country_value=sel_cou_val, language_value=sel_lan_val, max_pages=max_pages)
+            df_groupsor = scrape_groupsor(
+                category_value=selected_category_value_gs, 
+                country_value=selected_country_value_gs, 
+                language_value=selected_language_value_gs, 
+                max_pages=max_pages
+            )
             if not df_groupsor.empty:
                 all_data.append(df_groupsor)
-            # st.success("Finished scraping Groupsor.link!")
 
     # Combine and Display Results
     if all_data:
@@ -431,7 +460,7 @@ st.markdown("""
 
 st.info("**Note on Limitations:**")
 st.markdown("""
-*   **Dynamic Content:** `Groupda.com` uses a JavaScript call to determine your country. This scraper attempts to mimic the subsequent requests but might miss results that are strictly country-filtered.
+*   **Dynamic Content:** `Groupda.com` uses a JavaScript call to determine your country (`countryCode`, `countryName`). This scraper omits these parameters in POST requests, which might affect results if the server strictly filters by detected location.
 *   **Site Changes:** If the target websites change their HTML structure or request parameters, the scraper will need to be updated.
 *   **Rate Limiting/Blocking:** Sending too many requests too quickly can lead to your IP being blocked. The scraper includes random delays.
 *   **Respectful Scraping:** Always ensure your usage complies with the websites' terms of service and is respectful of their resources.
